@@ -23,6 +23,7 @@ import tenacity
 import zaza
 
 import zaza.model
+import zaza.utilities.machine_os
 import zaza.openstack.charm_tests.test_utils as test_utils
 import zaza.openstack.utilities.generic as generic_utils
 import zaza.openstack.utilities.openstack as openstack_utils
@@ -75,6 +76,71 @@ class BaseCharmOperationTest(test_utils.BaseCharmTest):
         if ret:
             logging.info(ret)
         self.assertIsNone(ret, msg=ret)
+
+    def test_conf_enable_hardware_offload(self):
+        """Enable hardware offload and confirm unit configuration.
+
+        Note, this is a shallow non-blackbox test to confirm charm operation
+        only.
+        """
+        if zaza.utilities.machine_os.is_container(self.lead_unit):
+            logging.info('unit is in a container, skip')
+            return
+
+        ifnames = zaza.utilities.machine_os.add_netdevsim(
+            self.lead_unit, 10, 1)
+        with self.config_change(
+                {},
+                {
+                    'enable-hardware-offload': True,
+                    'sriov-numvfs': ' '.join(
+                        ['{}:4'.format(ifname) for ifname in ifnames])
+                },
+                reset_to_charm_default=True):
+            # confirm that the charm writes interfaces.yaml
+            interfaces_yaml = zaza.model.file_contents(
+                self.lead_unit,
+                '/etc/sriov-netplan-shim/interfaces.yaml')
+            for ifname in ifnames:
+                assert ifname in interfaces_yaml
+                assert "pciaddress: 'netdevsim10'" in interfaces_yaml
+            # confirm that sriov-netplan-shim is installed and works
+            assert 'vlan 42' in zaza.utilities.juju.remote_run(
+                self.lead_unit,
+                'systemctl restart sriov-netplan-shim && '
+                'ip link set eni10np1 vf 1 vlan 42 && '
+                'ip link show eni10np1')
+            # confirm OVS is configured to use hw offload
+            assert 'true' in zaza.utilities.juju.remote_run(
+                self.lead_unit,
+                'ovs-vsctl get open-vswitch . other-config:hw-offload')
+
+    def test_conf_enable_sriov(self):
+        """Enable SR-IOV and confirm unit configuration.
+
+        Note, this is a shallow non-blackbox test to confirm charm operation
+        only.
+        """
+        if zaza.utilities.machine_os.is_container(self.lead_unit):
+            logging.info('unit is in a container, skip')
+            return
+
+        ifnames = zaza.utilities.machine_os.add_netdevsim(
+            self.lead_unit, 11, 1)
+        with self.config_change(
+                {},
+                {
+                    'enable-sriov': True,
+                    'sriov-numvfs': ' '.join(
+                        ['{}:4'.format(ifname) for ifname in ifnames])
+                },
+                reset_to_charm_default=True):
+            interfaces_yaml = zaza.model.file_contents(
+                self.lead_unit,
+                '/etc/sriov-netplan-shim/interfaces.yaml')
+            for ifname in ifnames:
+                assert ifname in interfaces_yaml
+                assert "pciaddress: 'netdevsim11'" in interfaces_yaml
 
 
 class CentralCharmOperationTest(BaseCharmOperationTest):
